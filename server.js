@@ -1,8 +1,11 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import helmet from "helmet";
 import connectDB from "./config/db.js";
 import userRoutes from "./routes/userRoutes.js";
+import { errorHandler } from "./middleware/errorMiddleware.js";
+import { generalLimiter } from "./middleware/rateLimitMiddleware.js";
 
 dotenv.config();
 
@@ -11,19 +14,45 @@ const PORT = parseInt(process.env.PORT, 10) || 5000;
 
 // Validate required environment variables
 const validateEnv = () => {
-  if (!process.env.MONGO_URI) {
-    console.error("❌ MONGO_URI is not defined in environment variables");
+  const required = [
+    "MONGO_URI",
+    "JWT_SECRET",
+    "REFRESH_TOKEN_SECRET",
+    "FRONTEND_URL",
+  ];
+  const missing = required.filter((env) => !process.env[env]);
+
+  if (missing.length > 0) {
+    console.error(
+      `❌ Missing environment variables: ${missing.join(", ")}`,
+    );
     process.exit(1);
   }
 };
 
-// Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Security Middleware
+app.use(helmet());
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    exposedHeaders: ["X-Total-Count"],
+    maxAge: 600,
+  }),
+);
+
+// Body Parser Middleware
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// Rate Limiting
+app.use(generalLimiter);
 
 // Routes
 app.use("/api/users", userRoutes);
+app.use("/api/auth", userRoutes);
 
 // Test Route
 app.get("/", (req, res) => {
@@ -36,33 +65,24 @@ app.get("/", (req, res) => {
 // 404 Handler
 app.use((req, res) => {
   res.status(404).json({
+    success: false,
     message: "Route not found",
     path: req.path,
     method: req.method,
   });
 });
 
-// Global Error Handler
-app.use((err, req, res, next) => {
-  const statusCode = err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
-  
-  console.error(`❌ Error [${statusCode}]: ${message}`);
-  
-  res.status(statusCode).json({
-    message,
-    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
-  });
-});
+// Global Error Handler (must be last)
+app.use(errorHandler);
 
 // Initialize Server
 const startServer = async () => {
   try {
     validateEnv();
-    
+
     // Connect Database
     await connectDB();
-    
+
     const server = app.listen(PORT, () => {
       console.log(`✅ Server running on port ${PORT}`);
     });
@@ -74,7 +94,7 @@ const startServer = async () => {
         console.log("✅ Server closed");
         process.exit(0);
       });
-      
+
       // Force shutdown after 10 seconds
       setTimeout(() => {
         console.error("❌ Forced shutdown due to timeout");
@@ -96,7 +116,6 @@ const startServer = async () => {
       console.error("❌ Unhandled Rejection at:", promise, "reason:", reason);
       process.exit(1);
     });
-
   } catch (error) {
     console.error("❌ Failed to start server:", error.message);
     process.exit(1);
@@ -104,3 +123,4 @@ const startServer = async () => {
 };
 
 startServer();
+
